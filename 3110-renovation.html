@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Renovation punch list — private live dashboard</title>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "Segoe UI", Arial, sans-serif; background:#f5f5f4; color:#1c1b19; margin:0; padding:24px 32px 48px; }
+  h1 { font-size:20px; font-weight:600; margin:0 0 4px; }
+  .subtitle { color:#57544d; font-size:13px; margin:0 0 20px; }
+  .kpi-row { display:grid; grid-template-columns:repeat(6,1fr); gap:10px; margin-bottom:20px; }
+  .kpi-card { background:#fff; border:1px solid #e2e0da; border-radius:10px; padding:12px; }
+  .kpi-label { font-size:12px; color:#57544d; margin-bottom:4px; }
+  .kpi-value { font-size:22px; font-weight:600; }
+  .panel { background:#fff; border:1px solid #e2e0da; border-radius:10px; padding:16px; margin-bottom:20px; }
+  .panel h2 { font-size:14px; font-weight:600; margin:0 0 4px; }
+  .panel .hint { font-size:11.5px; color:#8a877e; margin:0 0 10px; }
+  table { border-collapse:collapse; }
+  th, td { border:1px solid #e2e0da; padding:4px 6px; font-size:12px; }
+  .filters { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:14px; }
+  .filter-btn { border:1px solid #e2e0da; background:#fff; color:#57544d; font-size:12px; padding:5px 11px; border-radius:999px; cursor:pointer; }
+  .filter-btn.active { background:#1c1b19; color:#fff; }
+  .table-wrap { overflow-x:auto; }
+  #signin-btn { background:#1c1b19; color:#fff; border:none; border-radius:8px; padding:10px 18px; font-size:14px; cursor:pointer; }
+  #signin-box { padding:40px 0; text-align:center; }
+</style>
+</head>
+<body>
+
+<h1>Renovation punch list — private live dashboard</h1>
+<p class="subtitle">Signs in with your own Google account to read renovation_calendar_v2 directly — the sheet stays private, nobody else can access this data.</p>
+
+<div id="signin-box">
+  <button id="signin-btn" disabled>Loading Google Sign-In…</button>
+  <p id="error-msg" style="color:#a32d2d; font-size:13px; margin-top:14px;"></p>
+</div>
+
+<div id="app" style="display:none;">
+
+  <div id="kpiRow" class="kpi-row"></div>
+
+  <div class="panel">
+    <h2>Task calendar — Jul 27 – Sep 30, 2026</h2>
+    <p class="hint">✓ fixed date &nbsp;&nbsp; ◄──► window &nbsp;&nbsp; shaded = weekend &nbsp;&nbsp; outlined column = today</p>
+    <div class="table-wrap"><table id="calTable" style="font-size:10px;"></table></div>
+  </div>
+
+  <div class="filters" id="filters"></div>
+
+  <div class="table-wrap">
+    <table style="width:100%;">
+      <thead><tr id="headRow" style="background:#faf9f6;"></tr></thead>
+      <tbody id="bodyRows"></tbody>
+    </table>
+  </div>
+
+  <p style="font-size:11.5px; color:#8a877e; margin-top:14px;">Read-only. All edits happen in the Google Sheet (Punch List tab) — reload this page to pull the latest.</p>
+</div>
+
+<script>
+// ====== CONFIGURE THESE TWO VALUES ======
+const CLIENT_ID = "REPLACE_WITH_YOUR_OAUTH_CLIENT_ID.apps.googleusercontent.com";
+const SPREADSHEET_ID = "1LdlTr_Cggiee0QxCRVPlpJ6nh51cm_BA9t8S433OKgk";
+// =========================================
+
+const SHEET_NAME = "Punch List";
+const RANGE_START = new Date("2026-07-27T00:00:00");
+const RANGE_END = new Date("2026-09-30T00:00:00");
+
+const statusColors = {
+  "Blocked": {fg:"#a32d2d", bg:"#fcebeb"},
+  "Needs decision": {fg:"#854f0b", bg:"#faeeda"},
+  "Scheduled": {fg:"#0f6e56", bg:"#e1f5ee"},
+  "Not started": {fg:"#5f5e5a", bg:"#f1efe8"},
+  "On order": {fg:"#185fa5", bg:"#e6f1fb"},
+  "Pending": {fg:"#3c3489", bg:"#eeedfe"}
+};
+
+let tokenClient = null;
+let accessToken = null;
+
+window.addEventListener("load", () => {
+  const wait = setInterval(() => {
+    if (window.google && google.accounts && google.accounts.oauth2) {
+      clearInterval(wait);
+      initGis();
+    }
+  }, 100);
+});
+
+function initGis() {
+  if (CLIENT_ID.startsWith("REPLACE_WITH")) {
+    document.getElementById("error-msg").textContent = "Set your OAuth Client ID in the CLIENT_ID constant near the top of this file's <script> before opening it.";
+    return;
+  }
+  tokenClient = google.accounts.oauth2.initTokenClient({
+    client_id: CLIENT_ID,
+    scope: "https://www.googleapis.com/auth/spreadsheets.readonly",
+    callback: (resp) => {
+      if (resp.error) {
+        document.getElementById("error-msg").textContent = "Sign-in failed: " + resp.error;
+        return;
+      }
+      accessToken = resp.access_token;
+      loadData();
+    }
+  });
+  const btn = document.getElementById("signin-btn");
+  btn.disabled = false;
+  btn.textContent = "Sign in with Google";
+  btn.onclick = () => tokenClient.requestAccessToken();
+}
+
+function parseDate(s) { if (!s) return null; const d = new Date(s); return isNaN(d) ? null : d; }
+function sameDay(a,b){ return a && b && a.getFullYear()===b.getFullYear() && a.getMonth()===b.getMonth() && a.getDate()===b.getDate(); }
+function fmtDate(d){ return d ? d.toLocaleDateString("en-US",{month:"short",day:"numeric"}) : ""; }
+
+async function loadData() {
+  try {
+    const url = `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/${encodeURIComponent(SHEET_NAME)}`;
+    const resp = await fetch(url, { headers: { Authorization: "Bearer " + accessToken } });
+    if (!resp.ok) throw new Error("Sheets API returned HTTP " + resp.status);
+    const data = await resp.json();
+    const rows = data.values || [];
+    if (!rows.length) throw new Error("No data returned — check the sheet ID and tab name");
+
+    const headers = rows[0];
+    const idx = (name) => headers.indexOf(name);
+    const iNum = idx("#"), iItem = idx("Item / Description"), iCat = idx("Category"), iArea = idx("Area"),
+          iNotes = idx("Depends On / Notes"), iGroup = idx("Schedule Group"), iStatus = idx("Status"),
+          iReady = idx("Ready Date"), iEarliest = idx("Est. Finish Earliest"), iLatest = idx("Est. Finish Latest"),
+          iColor = idx("Color (hex)");
+
+    const tasks = [];
+    for (let r = 1; r < rows.length; r++) {
+      const row = rows[r];
+      if (!row[iNum] || isNaN(parseInt(row[iNum]))) continue;
+      tasks.push({
+        num: row[iNum], item: row[iItem], category: row[iCat], area: row[iArea],
+        notes: row[iNotes] || "", group: row[iGroup] || "", status: row[iStatus] || "",
+        ready: parseDate(row[iReady]), earliest: parseDate(row[iEarliest]), latest: parseDate(row[iLatest]),
+        color: row[iColor] || "#8A877E"
+      });
+    }
+    document.getElementById("signin-box").style.display = "none";
+    render(tasks);
+  } catch (e) {
+    document.getElementById("error-msg").textContent = "Couldn't load data: " + e.message;
+  }
+}
+
+const state = { area: "All" };
+let TASKS = [];
+
+function render(tasks) {
+  TASKS = tasks;
+  document.getElementById("app").style.display = "block";
+  renderKPIs(); renderCalendar(); renderFilters(); renderTable();
+}
+
+function renderKPIs() {
+  const counts = {};
+  TASKS.forEach(t => counts[t.status] = (counts[t.status]||0) + 1);
+  const order = ["Blocked","Needs decision","Not started","Scheduled","On order","Pending"];
+  const row = document.getElementById("kpiRow");
+  row.innerHTML = "";
+  const total = document.createElement("div");
+  total.className = "kpi-card";
+  total.innerHTML = `<div class="kpi-label">Total</div><div class="kpi-value">${TASKS.length}</div>`;
+  row.appendChild(total);
+  order.forEach(s => {
+    const c = document.createElement("div");
+    const sc = statusColors[s] || {fg:"#333",bg:"#eee"};
+    c.className = "kpi-card";
+    c.style.background = sc.bg;
+    c.innerHTML = `<div class="kpi-label" style="color:${sc.fg}">${s}</div><div class="kpi-value" style="color:${sc.fg}">${counts[s]||0}</div>`;
+    row.appendChild(c);
+  });
+}
+
+function renderFilters() {
+  const areas = ["All", ...new Set(TASKS.map(t => t.area))];
+  const el = document.getElementById("filters");
+  el.innerHTML = "";
+  areas.forEach(a => {
+    const b = document.createElement("button");
+    b.textContent = a;
+    b.className = "filter-btn" + (a === state.area ? " active" : "");
+    b.onclick = () => { state.area = a; renderFilters(); renderCalendar(); renderTable(); };
+    el.appendChild(b);
+  });
+}
+
+function buildDays() {
+  const days = []; let cur = new Date(RANGE_START);
+  while (cur <= RANGE_END) { days.push(new Date(cur)); cur.setDate(cur.getDate()+1); }
+  return days;
+}
+
+function renderCalendar() {
+  const days = buildDays();
+  const today = new Date();
+  const cal = document.getElementById("calTable");
+  cal.innerHTML = "";
+  const filtered = TASKS.filter(t => state.area === "All" || t.area === state.area);
+
+  const monthRow = document.createElement("tr");
+  const labelTh = document.createElement("th");
+  labelTh.textContent = "Item";
+  labelTh.style.cssText = "position:sticky;left:0;background:#44546a;color:#fff;padding:4px 8px;text-align:left;min-width:170px;z-index:2;";
+  monthRow.appendChild(labelTh);
+  let i = 0;
+  while (i < days.length) {
+    const key = days[i].getMonth();
+    let span = 0;
+    while (i+span < days.length && days[i+span].getMonth() === key) span++;
+    const th = document.createElement("th");
+    th.textContent = days[i].toLocaleDateString("en-US",{month:"long",year:"numeric"});
+    th.colSpan = span;
+    th.style.cssText = "background:#44546a;color:#fff;font-size:10px;font-weight:600;padding:3px 2px;text-align:center;";
+    monthRow.appendChild(th);
+    i += span;
+  }
+  cal.appendChild(monthRow);
+
+  const dateRow = document.createElement("tr");
+  const dLabelTh = document.createElement("th");
+  dLabelTh.style.cssText = "position:sticky;left:0;background:#d9d9d9;padding:2px 8px;z-index:2;";
+  dateRow.appendChild(dLabelTh);
+  days.forEach(d => {
+    const isWeekend = d.getDay()===0 || d.getDay()===6;
+    const isToday = sameDay(d, today);
+    const th = document.createElement("th");
+    th.innerHTML = `<div style="font-size:8px;color:#777;">${d.toLocaleDateString("en-US",{weekday:"short"}).slice(0,2)}</div><div>${d.getDate()}</div>`;
+    th.style.cssText = `background:${isWeekend?"#eceae3":"#f3f2ee"};padding:2px 3px;min-width:16px;text-align:center;font-weight:500;` + (isToday ? "border-left:2px solid #c00000;border-right:2px solid #c00000;" : "");
+    dateRow.appendChild(th);
+  });
+  cal.appendChild(dateRow);
+
+  filtered.forEach(t => {
+    const tr = document.createElement("tr");
+    const tdLabel = document.createElement("td");
+    tdLabel.textContent = t.item;
+    tdLabel.style.cssText = "position:sticky;left:0;background:#fff;padding:3px 8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:170px;z-index:1;";
+    tr.appendChild(tdLabel);
+    days.forEach(d => {
+      const isWeekend = d.getDay()===0 || d.getDay()===6;
+      const isToday = sameDay(d, today);
+      let mark = "";
+      if (t.earliest && t.latest) {
+        if (t.earliest.getTime()===t.latest.getTime()) { if (sameDay(d,t.earliest)) mark = "✓"; }
+        else { if (sameDay(d,t.earliest)) mark = "◄"; else if (sameDay(d,t.latest)) mark = "►"; }
+      }
+      const td = document.createElement("td");
+      td.textContent = mark;
+      td.style.cssText = `padding:3px 2px;text-align:center;font-weight:700;color:${t.color};background:${isWeekend?"#f5f4f0":"#fff"};` + (isToday ? "border-left:2px solid #c00000;border-right:2px solid #c00000;" : "");
+      tr.appendChild(td);
+    });
+    cal.appendChild(tr);
+  });
+}
+
+function renderTable() {
+  const headRow = document.getElementById("headRow");
+  headRow.innerHTML = "";
+  ["#","Item","Area","Status","Depends on / notes","Ready","Est. finish window"].forEach(h => {
+    const th = document.createElement("th");
+    th.textContent = h;
+    th.style.cssText = "text-align:left;font-weight:600;color:#57544d;white-space:nowrap;";
+    headRow.appendChild(th);
+  });
+  const body = document.getElementById("bodyRows");
+  body.innerHTML = "";
+  const filtered = TASKS.filter(t => state.area === "All" || t.area === state.area);
+  filtered.forEach(t => {
+    const tr = document.createElement("tr");
+    [t.num, t.item, t.area].forEach((v,i) => {
+      const td = document.createElement("td");
+      td.textContent = v;
+      if (i===1) td.style.cssText = "max-width:220px;white-space:normal;";
+      tr.appendChild(td);
+    });
+    const tdStatus = document.createElement("td");
+    const sc = statusColors[t.status] || {fg:"#333",bg:"#eee"};
+    tdStatus.innerHTML = `<span style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px;color:${sc.fg};background:${sc.bg};">${t.status}</span>`;
+    tr.appendChild(tdStatus);
+    const tdNotes = document.createElement("td");
+    tdNotes.textContent = t.notes;
+    tdNotes.style.cssText = "max-width:260px;white-space:normal;color:#57544d;";
+    tr.appendChild(tdNotes);
+    const tdReady = document.createElement("td");
+    tdReady.textContent = fmtDate(t.ready);
+    tr.appendChild(tdReady);
+    const tdWindow = document.createElement("td");
+    tdWindow.textContent = t.earliest ? (t.earliest.getTime()===t.latest.getTime() ? fmtDate(t.earliest) : (fmtDate(t.earliest)+" – "+fmtDate(t.latest))) : "—";
+    tr.appendChild(tdWindow);
+    body.appendChild(tr);
+  });
+}
+</script>
+</body>
+</html>
