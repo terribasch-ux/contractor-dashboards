@@ -88,6 +88,15 @@ window.addEventListener("load", () => {
       initGis();
     }
   }, 100);
+  setTimeout(() => {
+    if (!(window.google && google.accounts && google.accounts.oauth2)) {
+      clearInterval(wait);
+      document.getElementById("error-msg").textContent =
+        "Google's Sign-In script (accounts.google.com/gsi/client) never loaded after 6 seconds. " +
+        "This is almost always an ad blocker, privacy extension, or browser tracking-protection setting blocking Google scripts. " +
+        "Try disabling extensions for this page, or open it in a private/incognito window, then reload.";
+    }
+  }, 6000);
 });
 
 function initGis() {
