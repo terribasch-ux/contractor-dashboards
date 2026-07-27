@@ -257,15 +257,9 @@ function renderCalendar() {
     days.forEach(d => {
       const isWeekend = d.getDay()===0 || d.getDay()===6;
       const isToday = sameDay(d, today);
-      let mark = "";
-      if (t.earliest && t.latest) {
-        if (t.earliest.getTime()===t.latest.getTime()) { if (sameDay(d,t.earliest)) mark = "✓"; }
-        else { if (sameDay(d,t.earliest)) mark = "◄"; else if (sameDay(d,t.latest)) mark = "►"; }
-      }
+      const inSpan = t.earliest && t.latest && d >= t.earliest && d <= t.latest;
       const td = document.createElement("td");
-      td.textContent = mark;
-      td.style.cssText = `padding:3px 2px;text-align:center;font-weight:700;color:${t.color};background:${isWeekend?"#f5f4f0":"#fff"};` + (isToday ? "border-left:2px solid #c00000;border-right:2px solid #c00000;" : "");
-      tr.appendChild(td);
+      td.style.cssText = `padding:3px 2px;text-align:center;background:${inSpan ? t.color : (isWeekend?"#f5f4f0":"#fff")};` + (isToday ? "border-left:2px solid #c00000;border-right:2px solid #c00000;" : "");      tr.appendChild(td);
     });
     cal.appendChild(tr);
   });
